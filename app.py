@@ -1,93 +1,161 @@
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-from models import db, Student, Quiz, Result
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.secret_key = 'your_secret_key'  # Change this for security
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///hw13.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.secret_key = 'secret_key'
 
-db.init_app(app)
+db = SQLAlchemy(app)
 
+# Models
+class Student(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    first_name = db.Column(db.String(50), nullable=False)
+    last_name = db.Column(db.String(50), nullable=False)
 
-@app.route("/")
-def home():
-    return render_template("home.html")
+class Quiz(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    subject = db.Column(db.String(100), nullable=False)
+    num_questions = db.Column(db.Integer, nullable=False)
+    quiz_date = db.Column(db.String(50), nullable=False)
 
+class StudentResult(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    score = db.Column(db.Integer)
+    student_id = db.Column(db.Integer, db.ForeignKey('student.id'))
+    quiz_id = db.Column(db.Integer, db.ForeignKey('quiz.id'))
+    
+    student = db.relationship('Student', backref='results')
+    quiz = db.relationship('Quiz', backref='results')
 
-# Add Student
-@app.route("/add_student", methods=["GET", "POST"])
-def add_student():
-    if request.method == "POST":
-        name = request.form["name"]
-        email = request.form["email"]
-        if Student.query.filter_by(email=email).first():
-            flash("Student with this email already exists!")
+# Routes
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if username == 'admin' and password == 'password':
+            session['logged_in'] = True
+            return redirect(url_for('dashboard'))
         else:
-            student = Student(name=name, email=email)
-            db.session.add(student)
+            flash('Invalid username or password', 'error')
+            return redirect(url_for('login'))
+    return render_template('login.html')
+
+@app.route('/dashboard')
+def dashboard():
+    if not session.get('logged_in'):
+        flash('You must log in first.', 'error')
+        return redirect(url_for('login'))
+    
+    students = Student.query.all()  
+    quizzes = Quiz.query.all()      
+    return render_template('dashboard.html', students=students, quizzes=quizzes)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    flash('You have been logged out.', 'success')
+    return redirect(url_for('login'))
+
+# Add Student Route
+@app.route('/student/add', methods=['GET', 'POST'])
+def add_student():
+    if request.method == 'POST':
+        first_name = request.form.get('first_name')
+        last_name = request.form.get('last_name')
+
+        if not first_name or not last_name:
+            flash("Both first name and last name are required.", "error")
+            return render_template('add_student.html')
+
+        new_student = Student(first_name=first_name, last_name=last_name)
+
+        try:
+            db.session.add(new_student)
             db.session.commit()
-            flash("Student added successfully!")
-        return redirect(url_for("add_student"))
-    return render_template("add_student.html")
+            flash("Student added successfully!", "success")
+            return redirect(url_for('dashboard'))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error adding student: {str(e)}", "error")
+            return render_template('add_student.html')
 
+    return render_template('add_student.html')
 
-# Add Quiz
-@app.route("/add_quiz", methods=["GET", "POST"])
+# Add Quiz Route
+@app.route('/quiz/add', methods=['GET', 'POST'])
 def add_quiz():
-    if request.method == "POST":
-        title = request.form["title"]
-        date = request.form["date"]
-        quiz = Quiz(title=title, date=datetime.strptime(date, "%Y-%m-%d"))
-        db.session.add(quiz)
-        db.session.commit()
-        flash("Quiz added successfully!")
-        return redirect(url_for("add_quiz"))
-    return render_template("add_quiz.html")
+    if request.method == 'POST':
+        subject = request.form.get('subject')
+        num_questions = request.form.get('num_questions')
+        quiz_date = request.form.get('quiz_date')
 
+        if not subject or not num_questions or not quiz_date:
+            flash("All fields are required.", "error")
+            return render_template('add_quiz.html')
 
-# Add Quiz Result
-@app.route("/add_result", methods=["GET", "POST"])
-def add_result():
+        try:
+            quiz_date_parsed = datetime.strptime(quiz_date, '%Y-%m-%d')
+            new_quiz = Quiz(subject=subject, num_questions=int(num_questions), quiz_date=quiz_date_parsed)
+            db.session.add(new_quiz)
+            db.session.commit()
+            flash("Quiz added successfully!", "success")
+            return redirect(url_for('dashboard'))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error adding quiz: {str(e)}", "error")
+            return render_template('add_quiz.html')
+
+    return render_template('add_quiz.html')
+
+# Add Quiz Result Route
+@app.route('/results/add', methods=['GET', 'POST'])
+def add_quiz_result():
     students = Student.query.all()
     quizzes = Quiz.query.all()
 
-    if request.method == "POST":
-        student_id = request.form["student_id"]
-        quiz_id = request.form["quiz_id"]
-        score = request.form["score"]
+    if request.method == 'POST':
+        student_id = request.form.get('student_id')
+        quiz_id = request.form.get('quiz_id')
+        score = request.form.get('score')
 
-        result = Result(student_id=student_id, quiz_id=quiz_id, score=score)
-        db.session.add(result)
+        if not student_id or not quiz_id or not score:
+            flash('All fields are required!', 'error')
+            return render_template('add_quiz_result.html', students=students, quizzes=quizzes)
+
+        try:
+            score = int(score)
+            if not (0 <= score <= 100):
+                raise ValueError("Score must be between 0 and 100.")
+        except ValueError:
+            flash('Score must be a valid number between 0 and 100.', 'error')
+            return render_template('add_quiz_result.html', students=students, quizzes=quizzes)
+
+        quiz_result = StudentResult(student_id=student_id, quiz_id=quiz_id, score=score)
+        db.session.add(quiz_result)
         db.session.commit()
-        flash("Result added successfully!")
-        return redirect(url_for("add_result"))
 
-    return render_template("add_result.html", students=students, quizzes=quizzes)
+        flash('Quiz result added successfully!', 'success')
+        return redirect(url_for('dashboard'))
 
+    return render_template('add_quiz_result.html', students=students, quizzes=quizzes)
 
-# View Students
-@app.route("/view_students")
-def view_students():
-    students = Student.query.all()
-    return render_template("view_students.html", students=students)
+# View Student Results Route
+@app.route('/student/<int:student_id>', methods=['GET'])
+def view_student_results(student_id):
+    student = Student.query.get(student_id)
+    if not student:
+        flash('Student not found.', 'error')
+        return redirect(url_for('dashboard'))
 
+    results = db.session.query(Quiz, StudentResult).join(StudentResult).filter(StudentResult.student_id == student.id).all()
+    if not results:
+        return render_template('student_results.html', student=student, results=None)
 
-# View Quizzes
-@app.route("/view_quizzes")
-def view_quizzes():
-    quizzes = Quiz.query.all()
-    return render_template("view_quizzes.html", quizzes=quizzes)
+    return render_template('student_results.html', student=student, results=results)
 
-
-# View Results
-@app.route("/view_results")
-def view_results():
-    results = Result.query.all()
-    return render_template("view_results.html", results=results)
-
-
-if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
+if __name__ == '__main__':
     app.run(debug=True)
